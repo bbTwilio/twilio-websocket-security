@@ -26,7 +26,7 @@ The fix is four layers, and this post walks through all of them with working cod
 
 Everything here applies to [Media Streams](https://www.twilio.com/docs/voice/media-streams) too, with one important difference covered near the end.
 
-> **The companion repo:** every snippet below is extracted from a working project with 62 tests and an end-to-end smoke test, plus Terraform for AWS, GCP, and Azure. Grab it at [github.com/OWNER/twilio-websocket-security](https://github.com/OWNER/twilio-websocket-security). <!-- TODO: replace OWNER before publish -->
+> **The companion repo:** every snippet below is extracted from a working project with 62 tests and an end-to-end smoke test, plus Terraform for AWS, GCP, and Azure. Grab it at [github.com/bbTwilio/twilio-websocket-security](https://github.com/bbTwilio/twilio-websocket-security).
 
 ## Why WebSockets aren't webhooks
 
@@ -512,6 +512,6 @@ The four layers, in the order to build them:
 
 Layers 1 and 2 are table stakes. Layer 3 is what turns a replayable static signature into a credential that's useful once, for ninety seconds, for one specific call. Layer 4 is what keeps the first three from being quietly undone by a default you never chose.
 
-The full working implementation, with tests and Terraform for all three clouds, is at [github.com/OWNER/twilio-websocket-security](https://github.com/OWNER/twilio-websocket-security). <!-- TODO: replace OWNER before publish -->
+The full working implementation, with tests and Terraform for all three clouds, is at [github.com/bbTwilio/twilio-websocket-security](https://github.com/bbTwilio/twilio-websocket-security).
 
 Go build something, and make it refuse strangers.
