@@ -1,0 +1,37 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#F22F46','primaryBorderColor':'#B3122B','lineColor':'#0D122B','fontFamily':'Inter, Helvetica, Arial, sans-serif','clusterBkg':'#F4F4F6','clusterBorder':'#C9CDD8','edgeLabelBackground':'#FFFFFF','tertiaryColor':'#F4F4F6','tertiaryTextColor':'#0D122B'}}}%%
+flowchart LR
+    A["Anyone on the internet<br/>knows your wss:// URL"] --> L1
+
+    L1{"Layer 1<br/>wss:// + valid TLS cert"}
+    L1 -->|"plaintext ws://<br/>self-signed cert"| X1["Refused"]
+    L1 --> L2
+
+    L2{"Layer 2<br/>X-Twilio-Signature"}
+    L2 -->|"no signature<br/>forged signature<br/>signature over https:// URL"| X2["401"]
+    L2 --> L3
+
+    L3{"Layer 3<br/>Short-lived token"}
+    L3 -->|"no token · expired<br/>replayed jti · wrong audience"| X3["401"]
+    L3 --> L4
+
+    L4{"Layer 3b<br/>setup.callSid == claim"}
+    L4 -->|"token minted for another call"| X4["Close 1008"]
+    L4 --> L5
+
+    L5{"Layer 4 · optional<br/>Call exists and is live"}
+    L5 -->|"unknown CallSid<br/>wrong account · not live"| X5["Close 1008"]
+    L5 --> OK["Session established"]
+
+    N["Captured signature alone<br/>gets no further than Layer 3"] -.-> L3
+
+    classDef gate fill:#0D122B,stroke:#0D122B,color:#fff
+    classDef reject fill:#F22F46,stroke:#B3122B,color:#fff
+    classDef pass fill:#36D576,stroke:#1B9E4B,color:#0D122B
+    classDef threat fill:#F4F4F6,stroke:#8891AA,color:#0D122B
+    classDef note fill:#FEF6E4,stroke:#E5A823,color:#0D122B
+
+    class L1,L2,L3,L4,L5 gate
+    class X1,X2,X3,X4,X5 reject
+    class OK pass
+    class A threat
+    class N note

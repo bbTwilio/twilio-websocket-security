@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Secured Twilio ConversationRelay WebSocket on API Gateway + Lambda.
+  Authentication happens in a $connect REQUEST authorizer, before the
+  WebSocket connection is ever established.
+
+Parameters:
+  TwilioAuthTokenSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the Twilio auth token.
+  RelayTokenSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the base64 connection-token key (>=32 bytes).
+  StageName:
+    Type: String
+    Default: prod
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 10
+    Tracing: Active
+    Environment:
+      Variables:
+        NODE_OPTIONS: --enable-source-maps
+        JTI_TABLE_NAME: !Ref JtiTable
+        SESSION_TABLE_NAME: !Ref SessionTable
+        RELAY_TOKEN_TTL_SECONDS: '90'
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # WebSocket API
+  # ---------------------------------------------------------------------------
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: twilio-relay-ws
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: $request.body.type
+
+  # The enforcement point. Twilio's signature is a header and the connection
+  # token is a query parameter, and a REQUEST authorizer on $connect sees both.
+  ConnectAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref WebSocketApi
+      AuthorizerType: REQUEST
+      Name: twilio-handshake-authorizer
+      AuthorizerUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations
+      # ---------------------------------------------------------------------
+      # THE IMPORTANT LINE
+      # ---------------------------------------------------------------------
+      # API Gateway caches authorizer decisions keyed on the identity sources.
+      # Leave caching on and a replayed token inside the cache window returns
+      # the cached ALLOW *without invoking the authorizer at all* -- the
+      # single-use check silently never runs. Zero disables it.
+      AuthorizerResultTtlInSeconds: 0
+      IdentitySource:
+        - route.request.header.X-Twilio-Signature
+        - route.request.querystring.t
+
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/authorizer.handler
+      Environment:
+        Variables:
+          PUBLIC_HOST: !Sub ${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com
+          WS_PATH: !Sub /${StageName}
+          TWILIO_AUTH_TOKEN: !Sub '{{resolve:secretsmanager:${TwilioAuthTokenSecretArn}}}'
+          RELAY_TOKEN_SECRET: !Sub '{{resolve:secretsmanager:${RelayTokenSecretArn}}}'
+      Policies:
+        - DynamoDBWritePolicy: { TableName: !Ref JtiTable }
+
+  AuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/authorizers/${ConnectAuthorizer}
+
+  # --- $connect --------------------------------------------------------------
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ConnectAuthorizer
+      Target: !Sub integrations/${ConnectIntegration}
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectFunction.Arn}/invocations
+
+  ConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/default.connectHandler
+      Environment:
+        Variables:
+          PUBLIC_HOST: !Sub ${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com
+          WS_PATH: !Sub /${StageName}
+          TWILIO_AUTH_TOKEN: !Sub '{{resolve:secretsmanager:${TwilioAuthTokenSecretArn}}}'
+          RELAY_TOKEN_SECRET: !Sub '{{resolve:secretsmanager:${RelayTokenSecretArn}}}'
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref SessionTable }
+
+  ConnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConnectFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  # --- $default --------------------------------------------------------------
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE  # $connect already authenticated this connection
+      Target: !Sub integrations/${DefaultIntegration}
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DefaultFunction.Arn}/invocations
+
+  DefaultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/default.handler
+      Environment:
+        Variables:
+          PUBLIC_HOST: !Sub ${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com
+          WS_PATH: !Sub /${StageName}
+          TWILIO_AUTH_TOKEN: !Sub '{{resolve:secretsmanager:${TwilioAuthTokenSecretArn}}}'
+          RELAY_TOKEN_SECRET: !Sub '{{resolve:secretsmanager:${RelayTokenSecretArn}}}'
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref SessionTable }
+        - Statement:
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  DefaultFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DefaultFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  # --- $disconnect -----------------------------------------------------------
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${DisconnectIntegration}
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectFunction.Arn}/invocations
+
+  DisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/default.disconnectHandler
+      Environment:
+        Variables:
+          PUBLIC_HOST: !Sub ${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com
+          WS_PATH: !Sub /${StageName}
+          TWILIO_AUTH_TOKEN: !Sub '{{resolve:secretsmanager:${TwilioAuthTokenSecretArn}}}'
+          RELAY_TOKEN_SECRET: !Sub '{{resolve:secretsmanager:${RelayTokenSecretArn}}}'
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref SessionTable }
+
+  DisconnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DisconnectFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn: [ConnectRoute, DefaultRoute, DisconnectRoute]
+    Properties:
+      ApiId: !Ref WebSocketApi
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      DeploymentId: !Ref Deployment
+      StageName: !Ref StageName
+      DefaultRouteSettings:
+        # Rate limiting for the connection path. API Gateway's own account-level
+        # ceiling is 500 new connections/second; keep this well under whatever
+        # your downstream can absorb.
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 20
+        DataTraceEnabled: false  # would write frame contents (caller speech) to logs
+        LoggingLevel: ERROR
+
+  # ---------------------------------------------------------------------------
+  # Voice webhook (HTTP API, separate domain from the WebSocket API)
+  # ---------------------------------------------------------------------------
+  VoiceApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+
+  VoiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/voice.handler
+      Environment:
+        Variables:
+          PUBLIC_HOST: !Sub ${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com
+          WS_PATH: !Sub /${StageName}
+          VOICE_WEBHOOK_HOST: !Sub ${VoiceApi}.execute-api.${AWS::Region}.amazonaws.com
+          TWILIO_AUTH_TOKEN: !Sub '{{resolve:secretsmanager:${TwilioAuthTokenSecretArn}}}'
+          RELAY_TOKEN_SECRET: !Sub '{{resolve:secretsmanager:${RelayTokenSecretArn}}}'
+      Events:
+        Voice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref VoiceApi
+            Method: POST
+            Path: /voice
+
+  # ---------------------------------------------------------------------------
+  # State
+  # ---------------------------------------------------------------------------
+
+  # Single-use token ids. A conditional put on this table IS the replay check,
+  # so it must be strongly consistent -- which DynamoDB conditional writes are.
+  JtiTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jti
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jti
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  # Per-connection state, because $default has no memory between frames.
+  SessionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+Outputs:
+  VoiceWebhookUrl:
+    Description: Point your Twilio number's voice webhook here.
+    Value: !Sub https://${VoiceApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/voice
+  WebSocketUrl:
+    Description: The wss:// URL the TwiML will reference.
+    Value: !Sub wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}

@@ -1,0 +1,27 @@
+{
+  "name": "@twilio-samples/relay-apigw-lambda",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secured Twilio ConversationRelay WebSocket on AWS API Gateway + Lambda",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "deploy": "npm run build && sam deploy --guided"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.687.0",
+    "@aws-sdk/client-dynamodb": "^3.687.0",
+    "@aws-sdk/lib-dynamodb": "^3.687.0",
+    "@twilio-samples/relay-auth": "file:../../packages/auth",
+    "twilio": "^5.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

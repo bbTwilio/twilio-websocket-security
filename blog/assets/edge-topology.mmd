@@ -1,0 +1,31 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#F22F46','primaryBorderColor':'#B3122B','lineColor':'#0D122B','fontFamily':'Inter, Helvetica, Arial, sans-serif','clusterBkg':'#F4F4F6','clusterBorder':'#C9CDD8','edgeLabelBackground':'#FFFFFF','tertiaryColor':'#F4F4F6','tertiaryTextColor':'#0D122B'}}}%%
+flowchart LR
+    subgraph twilio["Twilio"]
+        T["ConversationRelay<br/>No fixed egress IPs"]
+    end
+
+    subgraph edge["Your edge"]
+        direction TB
+        W["WAF<br/>rate limit · header check<br/>managed rules"]
+        LB["Load balancer<br/>idle timeout · max duration"]
+        W --> LB
+    end
+
+    subgraph app["Your application"]
+        direction TB
+        U["Upgrade handler<br/>signature · token · jti"]
+        S["Session<br/>setup cross-check"]
+        U --> S
+    end
+
+    T ==>|"1 — HTTP Upgrade<br/>INSPECTED"| W
+    LB ==> U
+    T -.->|"2 — WebSocket frames<br/>NEVER INSPECTED"| S
+
+    classDef inspected fill:#F22F46,stroke:#B3122B,color:#fff,stroke-width:2px
+    classDef blind fill:#F4F4F6,stroke:#8891AA,color:#0D122B,stroke-dasharray:5 4
+    classDef appnode fill:#0D122B,stroke:#0D122B,color:#fff
+
+    class W,LB inspected
+    class T blind
+    class U,S appnode

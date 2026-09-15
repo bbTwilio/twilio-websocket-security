@@ -1,0 +1,43 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#F22F46','primaryTextColor':'#fff','primaryBorderColor':'#B3122B','lineColor':'#0D122B','secondaryColor':'#0D122B','tertiaryColor':'#F4F4F6','fontFamily':'Inter, Helvetica, Arial, sans-serif','actorTextColor':'#0D122B','signalColor':'#0D122B','signalTextColor':'#0D122B','noteBkgColor':'#FEF6E4','noteTextColor':'#0D122B','noteBorderColor':'#E5A823'}}}%%
+sequenceDiagram
+    autonumber
+    actor Caller
+    participant Twilio
+    participant Edge as WAF / Load balancer
+    participant App as Your app
+    participant Store as Replay store
+
+    Caller->>Twilio: Dials your number
+    Twilio->>Edge: POST /voice (X-Twilio-Signature)
+    Edge->>App: forwarded
+
+    rect rgb(254, 246, 228)
+        Note over App: Enforcement point 1 — HTTP webhook
+        App->>App: Validate signature over https:// URL
+        App->>App: Mint token bound to CallSid (90s TTL)
+    end
+
+    App-->>Twilio: TwiML #lt;ConversationRelay url="wss://…?t=JWT"#gt;
+
+    Twilio->>Edge: HTTP Upgrade + X-Twilio-Signature
+    Note over Edge: The ONLY hop the WAF can inspect
+    Edge->>App: forwarded upgrade request
+
+    rect rgb(254, 246, 228)
+        Note over App: Enforcement point 2 — the handshake
+        App->>App: 1. Validate signature over wss:// URL
+        App->>Store: 2. Claim jti (atomic, single-use)
+        Store-->>App: first use? yes / no
+    end
+
+    alt Any check fails
+        App-->>Twilio: 401 — no 101, no session allocated
+        Note over Caller,App: Connection never exists
+    else All checks pass
+        App-->>Twilio: 101 Switching Protocols
+        Twilio->>App: setup { callSid, from, to }
+        App->>App: 3. Assert setup.callSid == token claim
+        Note over Edge: Every frame from here on is<br/>invisible to the WAF
+        Twilio->>App: prompt { voicePrompt } — untrusted input
+        App-->>Twilio: text { token, last }
+    end
