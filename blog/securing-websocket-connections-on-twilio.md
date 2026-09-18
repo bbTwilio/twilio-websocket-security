@@ -441,9 +441,7 @@ Bold values are the ones you must change or design around.
 
 Everything above applies to `<Connect><Stream>` and `<Start><Stream>`, with one exception that matters.
 
-**Media Streams does not support query strings.** Twilio's [error 31920 documentation](https://www.twilio.com/docs/api/errors/31920) is explicit: `<Stream>` does not support them, and the recommended fix is to strip them and pass custom values via nested `<Parameter>` nouns instead.
-
-That breaks the query-string token from Layer 3. But you don't have to fall back to `<Parameter>` and give up pre-accept rejection — put the token in a **path segment** instead:
+**Media Streams does not support query strings.** Attempting to use query strings will generate Twilio's [error 31920 documentation](https://www.twilio.com/docs/api/errors/31920). Instead of using query strings (or the `<Parameter>` based option), the recommendation is to put the token in a **path segment** instead:
 
 ```ts
 // wss://relay.example.com/stream/<token>
@@ -467,12 +465,6 @@ The other differences are cosmetic: signature validation is identical, and custo
 | Frame-level injection | **Application code only — no WAF can see frames** |
 
 That last row is the point. Everything after the handshake is on you.
-
-## Two things that aren't the handshake
-
-**Treat `voicePrompt` as untrusted input.** It's transcribed caller speech, and anyone who reaches your bot can say anything into it. Pass it to your LLM as user-role content inside a structured prompt, never concatenated into your system instructions, and filter the output — whatever the model returns is spoken to the caller verbatim. ConversationRelay is a transport layer with no built-in content safety.
-
-**Query strings end up in logs.** ALB access logs, CloudFront logs, Cloud Logging and Front Door diagnostics all record the full query string, which means they record your token. A 90-second credential in a log file is a mild problem; the same credential in a log bucket your whole org can read is a worse one. Redact at the edge and in your own logging, and remember that transcripts are personal data too. Twilio also notes that `<Parameter>` values and `welcomeGreeting` are **not** treated as PCI data, so keep card data out of both.
 
 ## Testing it
 
